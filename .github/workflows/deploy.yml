@@ -12,8 +12,28 @@ env:
   ECS_CLUSTER_NAME: 2048-cluster
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: npm install
+        
+      - name: Run tests
+        run: npm test
+
   build:
     runs-on: ubuntu-latest
+    needs: test
     outputs:
       image: ${{ steps.build-image.outputs.image }}
     
@@ -42,15 +62,12 @@ jobs:
           docker build -f docker/Dockerfile -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-  
-  test:
+
+  container-test:
     runs-on: ubuntu-latest
     needs: build
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -61,21 +78,30 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
         
-      - name: Run tests on Docker image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
-          IMAGE_TAG: ${{ github.sha }}
+      - name: Test Docker container
         run: |
-          
+          # Pull the image built in the previous job
           docker pull ${{ needs.build.outputs.image }}
           
-         
-          docker run --rm ${{ needs.build.outputs.image }} npm test
+          # Test that the container starts and nginx serves content
+          docker run -d --name test-container -p 8080:80 ${{ needs.build.outputs.image }}
+          sleep 5
+          
+          # Test that the server responds
+          if curl -f http://localhost:8080; then
+            echo "✅ Container is serving content successfully"
+          else
+            echo "❌ Container failed to serve content"
+            exit 1
+          fi
+          
+          # Cleanup
+          docker stop test-container
+          docker rm test-container
           
   deploy:
     runs-on: ubuntu-latest
-    needs: [build, test]  
+    needs: [build, container-test]  
     
     steps:
       - name: Checkout code
