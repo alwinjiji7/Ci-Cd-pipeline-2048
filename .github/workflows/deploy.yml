@@ -12,27 +12,8 @@ env:
   ECS_CLUSTER_NAME: 2048-cluster
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'   # adjust to match your project
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
-
-
   build:
     runs-on: ubuntu-latest
-    needs: test
     outputs:
       image: ${{ steps.build-image.outputs.image }}
     
@@ -61,11 +42,40 @@ jobs:
           docker build -f docker/Dockerfile -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-
+  
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+          
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+        
+      - name: Run tests on Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          
+          docker pull ${{ needs.build.outputs.image }}
+          
+         
+          docker run --rm ${{ needs.build.outputs.image }} npm test
+          
   deploy:
     runs-on: ubuntu-latest
-    needs: build  
+    needs: [build, test]  
     
     steps:
       - name: Checkout code
@@ -102,5 +112,5 @@ jobs:
         run: |
           ALB_ARN=$(aws elbv2 describe-load-balancers --names "$PROJECT_NAME-alb" --query 'LoadBalancers[0].LoadBalancerArn' --output text)
           ALB_DNS=$(aws elbv2 describe-load-balancers --load-balancer-arns $ALB_ARN --query 'LoadBalancers[0].DNSName' --output text)
-          echo " Application deployed successfully!"
-          echo " Access your project at: http://$ALB_DNS"
+          echo "🚀 Application deployed successfully!"
+          echo "🌐 Access your project at: http://$ALB_DNS"
